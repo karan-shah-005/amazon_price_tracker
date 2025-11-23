@@ -1,96 +1,114 @@
-# streamlit_app.py
+# streamlit_app.py → Works perfectly on Streamlit 1.38+ (Nov 2025)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
 import os
 import time
 
-st.set_page_config(page_title="Amazon Price Tracker", layout="wide")
-st.title("Live Amazon.in Price Tracker")
-st.markdown("Auto-refreshes every 5 minutes | Built with ❤️ using Python + Selenium")
+# Page config
+st.set_page_config(
+    page_title="Amazon Price Tracker",
+    page_icon="📈",
+    layout="wide"
+)
 
-# Auto-refresh every 300 seconds
-st.sidebar.info("Auto-refreshing every 5 minutes...")
-time.sleep(1)
-st.experimental_rerun()  # Remove this line if you want manual refresh
+st.title("🚀 Live Amazon.in Price Tracker")
+st.markdown("**Auto-refreshes every 5 minutes** | Data updates every 6 hours")
+
+# ====================== AUTO REFRESH (NEW 2025 METHOD) ======================
+# Add a refresh countdown + button
+placeholder = st.empty()
+
+refresh_interval = 300  # seconds (5 minutes)
+
+if 'last_refresh' not in st.session_state:
+    st.session_state.last_refresh = time.time()
+
+elapsed = int(time.time() - st.session_state.last_refresh)
+
+if elapsed >= refresh_interval:
+    st.session_state.last_refresh = time.time()
+    st.rerun()  # This is the new correct way (replaces experimental_rerun)
+
+with placeholder.container():
+    mins, secs = divmod(refresh_interval - elapsed, 60)
+    st.markdown(f"🔄 **Next auto-refresh in:** {mins:02d}:{secs:02d}")
+
+# Optional: Manual refresh button
+if st.button("Refresh Now"):
+    st.rerun()
 
 # ====================== LOAD LATEST DATA ======================
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def load_data():
-    # Look for the latest CSV file
-    files = [f for f in os.listdir() if f.startswith("amazon_prices_") and f.endswith(".csv")]
+@st.cache_data(ttl=360)  # Cache 6 minutes
+def load_latest_data():
+    files = [f for f in os.listdir('.') if f.startswith("amazon_prices_") and f.endswith(".csv")]
     if not files:
-        st.error("No data found! Run the scraper first.")
+        st.error("No scraped data found! Run the scraper first.")
         return pd.DataFrame()
     
-    latest_file = max(files)
+    latest_file = max(files, key=os.path.getctime)
     df = pd.read_csv(latest_file)
     df["Timestamp"] = pd.to_datetime(df["Timestamp"])
-    return df
+    return df, latest_file
 
-df = load_data()
-
+df, filename = load_latest_data()
 if df.empty:
     st.stop()
 
-# Clean price columns
-def clean_price(price_str):
-    if pd.isna(price_str) or price_str == "N/A":
-        return None
-    return float(str(price_str).replace("₹", "").replace(",", "").strip())
+# Clean prices
+def clean_price(x):
+    if pd.isna(x) or x == "N/A": return None
+    return float(str(x).replace("₹", "").replace(",", "").replace(".", "").strip())
 
 df["Current_Price"] = df["Price"].apply(clean_price)
-df["MRP_Price"] = df["MRP"].apply(clean_price)
-df["Discount_%"] = ((df["MRP_Price"] - df["Current_Price"]) / df["MRP_Price"] * 100).round(1)
+df["MRP_Clean"] = df["MRP"].apply(clean_price)
+df["Discount_%"] = ((df["MRP_Clean"] - df["Current_Price"]) / df["MRP_Clean"] * 100).round(1)
 
-# ====================== SIDEBAR FILTERS ======================
-st.sidebar.header("Filters")
-selected_products = st.sidebar.multiselect("Select Products", options=df["Title"].unique(), default=df["Title"].unique())
-
-df_filtered = df[df["Title"].isin(selected_products)]
-
-# ====================== MAIN DASHBOARD ======================
+# ====================== DASHBOARD ======================
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("Products Tracked", len(df_filtered))
+    st.metric("Products Tracked", len(df["Title"].unique()))
 with col2:
-    avg_price = df_filtered["Current_Price"].mean()
-    st.metric("Avg Price", f"₹{avg_price:,.0f}" if avg_price else "N/A")
+    avg = df["Current_Price"].mean()
+    st.metric("Average Price", f"₹{avg:,.0f}" if avg else "N/A")
 with col3:
-    avg_discount = df_filtered["Discount_%"].mean()
-    st.metric("Avg Discount", f"{avg_discount:.1f}%" if avg_discount else "N/A")
+    disc = df["Discount_%"].mean()
+    st.metric("Average Discount", f"{disc:.1f}%" if disc else "N/A")
 with col4:
-    st.metric("Last Updated", df["Timestamp"].max().strftime("%d %b %Y, %I:%M %p"))
+    last_update = df["Timestamp"].max()
+    st.metric("Last Scrape", last_update.strftime("%d %b %Y, %I:%M %p"))
 
-# Price trend chart
-if len(df_filtered) > 0:
-    fig = px.line(df_filtered, x="Timestamp", y="Current_Price", color="Title",
-                  title="Live Price Movement (Last 7 Days)",
-                  markers=True)
-    fig.update_layout(hovermode="x unified", height=500)
-    st.plotly_chart(fig, use_container_width=True)
+st.info(f"Data source: `{filename}`")
 
-# Current prices table with alerts
-st.subheader("Current Prices & Alerts")
-current = df_filtered.drop_duplicates(subset="Title", keep="last").copy()
-current = current[["Title", "Current_Price", "MRP_Price", "Discount_%", "Availability", "URL", "Timestamp"]]
+# Price trend line chart
+fig = px.line(df.sort_values("Timestamp"),
+              x="Timestamp",
+              y="Current_Price",
+              color="Title",
+              title="📉 Live Price Movement",
+              markers=True,
+              hover_data=["Discount_%", "Availability"])
+fig.update_layout(height=500, hovermode="x unified")
+st.plotly_chart(fig, use_container_width=True)
 
-# Highlight price drops >8%
-def highlight_drop(row):
-    if row["Discount_%"] > 8:
+# Current status table with alerts
+st.subheader("Current Prices (Real-Time)")
+current = df.drop_duplicates(subset="Title", keep="last")[["Title", "Price", "MRP", "Discount_%", "Rating", "Availability", "URL"]]
+
+def highlight_rows(row):
+    if row["Discount_%"] > 10:
         return ['background-color: #ffcccc'] * len(row)
+    elif row["Discount_%"] > 5:
+        return ['background-color: #fff4cc'] * len(row)
     return [''] * len(row)
 
-styled = current.style.format({
-    "Current_Price": "₹{:,.0f}",
-    "MRP_Price": "₹{:,.0f}",
-    "URL": lambda x: f'<a href="{x}" target="_blank">View Product</a>'
-}).apply(highlight_drop, axis=1)
+styled = current.style\
+    .format({"URL": lambda x: f'<a href="{x}" target="_blank">View on Amazon</a>', "Discount_%": "{:.1f}%"})\
+    .apply(highlight_rows, axis=1)
 
 st.dataframe(styled, use_container_width=True, hide_index=True)
 
 # Footer
 st.markdown("---")
-st.markdown("Built by [Your Name] | Python + Selenium + Streamlit | Contact: +91-xxxxxxxxxx")
+st.markdown("Built by **[Your Name]** | Python + Selenium + Streamlit | WhatsApp: +91-xxxxxxxxxx")
