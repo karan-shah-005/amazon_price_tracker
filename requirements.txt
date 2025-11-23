@@ -1,0 +1,8 @@
+streamlit
+selenium
+webdriver-manager
+pandas
+plotly
+gspread
+oauth2client
+fake-useragent
